@@ -41,6 +41,7 @@ func ConvertOpenAIResponsesRequestToCodex(modelName string, inputRawJSON []byte,
 	// Convert role "system" to "developer" in input array to comply with Codex API requirements.
 	rawJSON = convertSystemRoleToDeveloper(rawJSON)
 	rawJSON = normalizeCodexBuiltinTools(rawJSON)
+	rawJSON = normalizeSpawnAgentSessionIDToolSchema(rawJSON)
 
 	return rawJSON
 }
@@ -139,4 +140,61 @@ func normalizeCodexBuiltinToolType(toolType string) string {
 	default:
 		return ""
 	}
+}
+
+var spawnAgentSessionIDSchemaJSON = []byte(`{"type":["string","null"],"default":null,"description":"Existing subagent session id to continue. For creating a new subagent, omit this field or set it to JSON null. Never use empty string, /null, <null>, string null, or whitespace."}`)
+
+func normalizeSpawnAgentSessionIDToolSchema(rawJSON []byte) []byte {
+	tools := gjson.GetBytes(rawJSON, "tools")
+	if !tools.IsArray() {
+		return rawJSON
+	}
+
+	result := rawJSON
+	for i, tool := range tools.Array() {
+		if tool.Get("type").String() != "function" || tool.Get("name").String() != "spawn_agent" {
+			continue
+		}
+
+		schemaPath := fmt.Sprintf("tools.%d.parameters.properties.session_id", i)
+		if !gjson.GetBytes(result, schemaPath).Exists() {
+			continue
+		}
+		if updated, err := sjson.SetRawBytes(result, schemaPath, spawnAgentSessionIDSchemaJSON); err == nil {
+			result = updated
+		}
+
+		requiredPath := fmt.Sprintf("tools.%d.parameters.required", i)
+		result = removeRequiredToolField(result, requiredPath, "session_id")
+	}
+	return result
+}
+
+func removeRequiredToolField(rawJSON []byte, path string, field string) []byte {
+	required := gjson.GetBytes(rawJSON, path)
+	if !required.IsArray() {
+		return rawJSON
+	}
+
+	changed := false
+	filtered := []byte(`[]`)
+	for _, item := range required.Array() {
+		value := item.String()
+		if value == field {
+			changed = true
+			continue
+		}
+		if updated, err := sjson.SetBytes(filtered, "-1", value); err == nil {
+			filtered = updated
+		}
+	}
+	if !changed {
+		return rawJSON
+	}
+
+	updated, err := sjson.SetRawBytes(rawJSON, path, filtered)
+	if err != nil {
+		return rawJSON
+	}
+	return updated
 }
